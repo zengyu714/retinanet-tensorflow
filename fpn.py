@@ -31,38 +31,6 @@ import tensorflow.contrib.eager as tfe
 import utils.layers as ul
 
 
-class _Conv2D(tfe.Network):
-    def __init__(self, filters, kernel_size, strides=1, activation=tf.nn.relu, name=None):
-        super(_Conv2D, self).__init__()
-        self.conv = self.track_layer(
-                tf.layers.Conv2D(filters,
-                                 kernel_size,
-                                 strides,
-                                 activation=activation,
-                                 padding='same',
-                                 data_format='channels_first',
-                                 name=name))
-
-    def call(self, x):
-        return self.conv(x)
-
-
-class _Conv2DTranspose(tfe.Network):
-    def __init__(self, filters, kernel_size, strides=1, activation=tf.nn.relu, name=None):
-        super(_Conv2DTranspose, self).__init__()
-        self.conv = self.track_layer(
-                tf.layers.Conv2DTranspose(filters,
-                                          kernel_size,
-                                          strides,
-                                          activation=activation,
-                                          padding='same',
-                                          data_format='channels_first',
-                                          name=name))
-
-    def call(self, x):
-        return self.conv(x)
-
-
 class _IdentityBlock(tfe.Network):
     """_IdentityBlock is the block that has no conv layer at shortcut.
     Args:
@@ -206,6 +174,25 @@ class ResFPN(tfe.Network):
         data_format = 'channels_first'
         bn_axis = 1
 
+        def conv2d(filters, kernel_size, strides=1, activation=tf.nn.relu, name=None):
+            """Mainly use to freeze data_format and padding"""
+            l = tf.layers.Conv2D(filters, kernel_size,
+                                 strides=strides,
+                                 activation=activation,
+                                 padding='same',
+                                 data_format='channels_first',
+                                 name=name)
+            return self.track_layer(l)
+
+        def conv2d_transpose(filters, kernel_size, strides=1, activation=tf.nn.relu, name=None):
+            l = tf.layers.Conv2DTranspose(filters, kernel_size,
+                                          strides=strides,
+                                          activation=activation,
+                                          padding='same',
+                                          data_format='channels_first',
+                                          name=name)
+            return self.track_layer(l)
+
         def conv_block(filters, stage, block, strides=(2, 2)):
             l = _ConvBlock(3, filters, stage=stage, block=block, data_format=data_format, strides=strides)
             return self.track_layer(l)
@@ -216,7 +203,7 @@ class ResFPN(tfe.Network):
 
         # Bottom-up
         # ==========================================================================================================
-        self.conv1 = _Conv2D(64, 7, strides=2, activation=None, name='conv1')
+        self.conv1 = conv2d(64, 7, strides=2, activation=None, name='conv1')
         self.bn_conv1 = self.track_layer(tf.layers.BatchNormalization(axis=bn_axis, name='bn_conv1'))
         self.max_pool = self.track_layer(tf.layers.MaxPooling2D((3, 3), strides=(2, 2), data_format=data_format))
 
@@ -240,21 +227,21 @@ class ResFPN(tfe.Network):
         self.l5b = id_block([512, 512, 2048], stage=5, block='b')
         self.l5c = id_block([512, 512, 2048], stage=5, block='c')
 
-        self.conv6 = _Conv2D(256, 3, strides=2)
-        self.conv7 = _Conv2D(256, 3, strides=2)
+        self.conv6 = conv2d(256, 3, strides=2, name='conv6')
+        self.conv7 = conv2d(256, 3, strides=2, name='conv7')
 
         # Lateral
         # ===================================================================================
-        self.latlayer1 = _Conv2D(256, 1)
-        self.latlayer2 = _Conv2D(256, 1)
-        self.latlayer3 = _Conv2D(256, 1)
+        self.latlayer1 = conv2d(256, 1, name='lateral1')
+        self.latlayer2 = conv2d(256, 1, name='lateral2')
+        self.latlayer3 = conv2d(256, 1, name='lateral3')
 
         # Top-down
         # ===============================================D===============s====================
-        self.upsample1 = _Conv2DTranspose(256, 4, strides=2)
-        self.toplayer1 = _Conv2D(256, 3)
-        self.upsample2 = _Conv2DTranspose(256, 4, strides=2)
-        self.toplayer2 = _Conv2D(256, 3)
+        self.upsample1 = conv2d_transpose(256, 4, strides=2, name='upsample1')
+        self.toplayer1 = conv2d(256, 3, name='top1')
+        self.upsample2 = conv2d_transpose(256, 4, strides=2, name='upsample2')
+        self.toplayer2 = conv2d(256, 3, name='top2')
 
     def call(self, x, training=False):
         # Bottom-up

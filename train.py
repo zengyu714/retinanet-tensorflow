@@ -26,15 +26,19 @@ def train_one_epoch(model, optimizer, dataset, log_interval=None):
     tf.train.get_or_create_global_step()
 
     def model_loss(images, loc_trues, cls_trues):
-        loc_preds, cls_preds = model(images)
+        loc_preds, cls_preds = model(images, training=True)
         loss_value = loss_fn(loc_preds, loc_trues, cls_preds, cls_trues, num_classes=conf.num_class)
         tf.contrib.summary.scalar('loss', loss_value)
         return loss_value
 
     for batch, (images, loc_trues, cls_trues) in enumerate(tfe.Iterator(dataset)):
         with tf.contrib.summary.record_summaries_every_n_global_steps(10):
+            gs = tf.train.get_global_step()
+            # Visualize the input images
+            tf.contrib.summary.image('inputs', tf.transpose(images, [0, 2, 3, 1]), max_images=2, global_step=gs)
+            # Optimize the loss
             batch_model_loss = functools.partial(model_loss, images, loc_trues, cls_trues)
-            optimizer.minimize(batch_model_loss, global_step=tf.train.get_global_step())
+            optimizer.minimize(batch_model_loss, global_step=gs)
             if log_interval and batch % log_interval == 0:
                 print('==> ==> ==> Batch #{}\tLoss: {:.6f}'.format(batch, batch_model_loss().numpy()))
 
@@ -42,14 +46,18 @@ def train_one_epoch(model, optimizer, dataset, log_interval=None):
 def validate(model, dataset):
     """Perform an evaluation of `model` on the examples from `dataset`."""
 
-    avg_loss = tfe.metrics.Mean('loss')
-    for images, loc_trues, cls_trues in tfe.Iterator(dataset):
+    total_loss = 0.
+    for batch, (images, loc_trues, cls_trues) in enumerate(tfe.Iterator(dataset)):
         loc_preds, cls_preds = model(images)
-        avg_loss(loss_fn(loc_preds, loc_trues, cls_preds, cls_trues, num_classes=conf.num_class))
+        loss = loss_fn(loc_preds, loc_trues, cls_preds, cls_trues, num_classes=conf.num_class)
+        total_loss += loss
+        if batch % 10 == 0:
+            print('==> ==> ==> Batch #{}\t Test loss: {:.6f}'.format(batch, loss.numpy()))
 
-    print('Test set: Average loss: {:.4f}\n'.format(avg_loss.result()))
+    avg_loss = (total_loss / batch).numpy()
+    print('Test set: Average loss: {:.6f}\n'.format(avg_loss))
     with tf.contrib.summary.always_record_summaries():
-        tf.contrib.summary.scalar('loss', avg_loss.result())
+        tf.contrib.summary.scalar('loss', avg_loss)
 
 
 def main(_):
@@ -74,7 +82,7 @@ def main(_):
     train_dir, val_dir = [os.path.join(conf.summary_dir, mode) for mode in ['train', 'val']]
     tf.gfile.MakeDirs(conf.summary_dir)
 
-    train_summary_writer = tf.contrib.summary.create_summary_file_writer(train_dir, flush_millis=10000)
+    train_summary_writer = tf.contrib.summary.create_summary_file_writer(train_dir, flush_millis=10000, name='train')
     val_summary_writer = tf.contrib.summary.create_summary_file_writer(val_dir, flush_millis=10000, name='val')
 
     checkpoint_prefix = os.path.join(conf.checkpoint_dir, 'ckpt')
@@ -87,7 +95,7 @@ def main(_):
                 with train_summary_writer.as_default():
                     train_one_epoch(model, optimizer, train_ds, conf.log_interval)
                 end = time.time()
-                print('\n==> ==> ==> Train time for epoch #{} (global step {}): {}'.format(
+                print('==> ==> ==> Train time for epoch #{} (global step {}): {:.3f}s\n'.format(
                         epoch, global_step.numpy(), end - start))
                 with val_summary_writer.as_default():
                     validate(model, val_ds)

@@ -1,19 +1,29 @@
 import tensorflow as tf
 import tensorflow.contrib.eager as tfe
 
-from tensorflow.contrib.layers.python.layers.layers import repeat
-from fpn import ResFPN, _Conv2D
+from fpn import ResFPN
 
 
 class _MakeHead(tfe.Network):
-    def __init__(self, out_planes, kernel_size=3, strides=1):
-        super(_MakeHead, self).__init__()
-        self.conv1 = _Conv2D(256, kernel_size, strides)
-        self.conv2 = _Conv2D(256, kernel_size, strides)
-        self.conv3 = _Conv2D(256, kernel_size, strides)
-        self.conv4 = _Conv2D(256, kernel_size, strides)
+    def __init__(self, out_planes, kernel_size=3, strides=1, head_name=''):
+        super(_MakeHead, self).__init__(name='')
 
-        self.conv_out = _Conv2D(out_planes, kernel_size, strides, activation=None)
+        def conv2d(filters, kernel_size, strides=1, activation=tf.nn.relu, name=''):
+            """Mainly use to freeze data_format and padding"""
+            l = tf.layers.Conv2D(filters, kernel_size,
+                                 strides=strides,
+                                 activation=activation,
+                                 padding='same',
+                                 data_format='channels_first',
+                                 name=name)
+            return self.track_layer(l)
+
+        self.conv1 = conv2d(256, kernel_size, strides, name=head_name + '_1')
+        self.conv2 = conv2d(256, kernel_size, strides, name=head_name + '_2')
+        self.conv3 = conv2d(256, kernel_size, strides, name=head_name + '_3')
+        self.conv4 = conv2d(256, kernel_size, strides, name=head_name + '_4')
+
+        self.conv_out = conv2d(out_planes, kernel_size, strides, activation=None, name=head_name + '_out')
 
     def call(self, x):
         x = self.conv4(self.conv3(self.conv2(self.conv1(x))))
@@ -34,13 +44,22 @@ class RetinaNet(tfe.Network):
             num_classes: # of classification classes
             num_anchors: # of anchors in each feature map
         """
-        self.fpn = ResFPN()
-        self.loc_head = _MakeHead(self.num_anchors * 4)
-        self.cls_head = _MakeHead(self.num_anchors * self.num_classes)
 
-    def call(self, x):
+        def head_block(out_planes, name=None):
+            l = _MakeHead(out_planes, head_name=name)
+            return self.track_layer(l)
+
+        def fpn_block():
+            l = ResFPN()
+            return self.track_layer(l)
+
+        self.fpn = fpn_block()
+        self.loc_head = head_block(self.num_anchors * 4, name='Location')
+        self.cls_head = head_block(self.num_anchors * self.num_classes, name='Class')
+
+    def call(self, x, training=False):
         batch_size = tf.shape(x)[0]
-        feature_maps = self.fpn(x)
+        feature_maps = self.fpn(x, training)
         loc_preds = []
         cls_preds = []
         for feature_map in feature_maps:

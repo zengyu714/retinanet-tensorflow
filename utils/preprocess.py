@@ -1,16 +1,7 @@
 import tensorflow as tf
-
-from utils import tf_image
 from tensorflow.python.ops import control_flow_ops
 
-
-def tf_summary_image(image, bboxes, name='image'):
-    """Add image with bounding boxes to summary.
-    """
-    image = tf.expand_dims(image, 0)
-    bboxes = tf.cast(tf.expand_dims(bboxes, 0), tf.float32)
-    image_with_box = tf.image.draw_bounding_boxes(image, bboxes)
-    tf.contrib.summary.image(name, image_with_box)
+from utils import image_ops
 
 
 def distort_intensity(image, scope=None):
@@ -40,11 +31,10 @@ def preprocess_for_train(image, bboxes, labels, out_shape, scope='preprocessing_
         image = tf.image.resize_images(image, out_shape)
 
         # Randomly flip the image horizontally.
-        image, bboxes = tf_image.random_flip_lr(image, bboxes)
+        image, bboxes = image_ops.random_flip_lr(image, bboxes)
 
         # Randomly distort the black-and-white intensity.
         image = distort_intensity(image)
-        tf_summary_image(image, bboxes, name='distorted_input_images')
 
         # H x W x C --> C x H x W
         image = tf.transpose(image, perm=(2, 0, 1))
@@ -62,7 +52,6 @@ def preprocess_for_val(image, bboxes, labels, out_shape, scope='preprocessing_ev
 
         # Resize image to output size.
         image = tf.image.resize_images(image, out_shape)
-        tf_summary_image(image, bboxes, name='resized_input_images')
 
         # H x W x C --> C x H x W
         image = tf.transpose(image, perm=(2, 0, 1))
