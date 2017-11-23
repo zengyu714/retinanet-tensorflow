@@ -104,8 +104,13 @@ class BoxEncoder:
         cls_trues = tf.cast(cls_trues, tf.float32)
         return loc_trues, cls_trues
 
-    def decode(self, loc_preds, cls_preds, input_size,
-               cls_thred=conf.cls_thred, nms_thred=conf.nms_thred, return_score=False):
+    def decode(self, loc_preds, cls_preds,
+               input_size=conf.input_size,
+               cls_thred=conf.cls_thred,
+               max_output_size=conf.max_output_size,
+               nms_thred=conf.nms_thred,
+               return_score=False,
+               tf_box_order=True):
         """Decode outputs back to bouding box locations and class labels.
 
         Args:
@@ -113,11 +118,16 @@ class BoxEncoder:
             cls_preds: (tensor) predicted class labels, sized [#anchors, #classes].
             input_size: (int/tuple) model input size of (w, h), should be the same.
             cls_thred: class score threshold
+            max_output_size: max output nums after nms
             nms_thred: non-maximum suppression threshold
             return_score: (bool) indicate whether to return score value.
+            tf_box_order: (bool) True: [ymin, xmin, ymax, xmax]
+                                False: [xmin, ymin, xmax, ymax]
         Returns:
-            boxes: (tensor) decode box locations, sized [#obj, 4]. [xmin, ymin, xmax, ymax]
+            boxes: (tensor) decode box locations, sized [#obj, 4].
+                            order determined by param: tf_box_order
             labels: (tensor) class labels for each box, sized [#obj, ].
+            NOTE: #obj == min(#detected_objs, #max_output_size)
         """
         assert len(loc_preds.get_shape().as_list()) == 2, 'Ensure the location input shape to be [#anchors, 4]'
         assert len(cls_preds.get_shape().as_list()) == 2, 'Ensure the class input shape to be [#anchors, #classes]'
@@ -137,10 +147,17 @@ class BoxEncoder:
 
         ids = tf.cast(score > cls_thred, tf.int32)
         ids = tf.squeeze(tf.where(tf.not_equal(ids, 0)))
-        # ids.nonzero().squeeze()  # [#obj, ]
         if not ids.get_shape().as_list():  # Fail to detect, choose the max score
             ids = tf.argmax(score)
-        keep = box_nms(tf.gather(boxes, ids), tf.gather(score, ids), threshold=nms_thred)
+        if tf_box_order:  # [ymin, xmin, ymax, xmax]
+            boxes = tf.transpose(tf.gather(tf.transpose(boxes), [1, 0, 3, 2]))
+            keep = tf.image.non_max_suppression(tf.gather(boxes, ids),
+                                                tf.gather(score, ids),
+                                                max_output_size=max_output_size,
+                                                iou_threshold=nms_thred)
+        else:  # [xmin, ymin, xmax, ymax]
+            keep = box_nms(tf.gather(boxes, ids), tf.gather(score, ids),
+                           threshold=nms_thred)
 
         def _index(t, index):
             """Gather tensor successively
@@ -155,6 +172,41 @@ class BoxEncoder:
         if return_score:
             return _index(boxes, [ids, keep]), _index(labels, [ids, keep]), _index(score, [ids, keep])
         return _index(boxes, [ids, keep]), _index(labels, [ids, keep])
+
+    def decode_batch(self,
+                     batch_loc_preds,
+                     batch_cls_preds,
+                     input_size=conf.input_size,
+                     tf_box_order=True):
+        """Choose the most confident one from multiple (if any) predictions per image.
+        Make sure each image only has one output (loc + cls)
+
+        Args:
+            batch_loc_preds: (tensor) predicted locations, sized [batch, #anchors, 4].
+            batch_cls_preds: (tensor) predicted class labels, sized [batch, #anchors, #classes].
+            input_size: (int/tuple) model input size of (w, h), should be the same.
+            tf_box_order: (bool) True: [ymin, xmin, ymax, xmax]
+                                False: [xmin, ymin, xmax, ymax]
+        Returns:
+            batch_loc: (tensor)  decode batch box locations, sized [batch, 4]. [y_min, x_min, y_max, x_max]
+            batch_cls: (tensor) class label for each box, sized [batch, ]
+            batch_scores: (tensor) score for each box, sized [batch, ]
+
+        """
+        batch_loc, batch_cls, batch_scores = [], [], []
+        for i, (loc_preds, cls_preds) in enumerate(zip(batch_loc_preds, batch_cls_preds)):
+            loc, cls, scores = self.decode(loc_preds, cls_preds,
+                                           input_size,
+                                           max_output_size=10,
+                                           return_score=True,
+                                           tf_box_order=tf_box_order)
+            if scores.shape[0] == 0:
+                return [None] * 3
+            max_score_id = tf.argmax(scores)
+            batch_loc.append(tf.gather(loc, max_score_id).numpy() / input_size[0])
+            for item in ['cls', 'scores']:
+                eval('batch_' + item).append(tf.gather(eval(item), max_score_id).numpy())
+        return [tf.convert_to_tensor(item, dtype=tf.float32) for item in [batch_loc, batch_cls, batch_scores]]
 
 
 def test():
@@ -171,9 +223,10 @@ def test():
 
             with tf.device("cpu:0"):
                 # Decode one by one in a batch
-                loc_preds, cls_preds = box_encoder.decode(loc_preds.cpu()[0], cls_preds.cpu()[0], input_size)
+                loc_preds, cls_preds, score = box_encoder.decode_batch(loc_preds.cpu(), cls_preds.cpu(), input_size)
                 print('loc_preds {} shape: {}'.format(loc_preds, loc_preds.shape))
                 print('cls_preds {} shape: {}'.format(cls_preds, cls_preds.shape))
+                print('score {} shape: {}'.format(score, score.shape))
             break
 
 

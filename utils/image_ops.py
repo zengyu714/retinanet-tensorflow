@@ -73,3 +73,4 @@ def random_flip_lr(image, bboxes, seed=None):
                          lambda: flip_bboxes(bboxes),
                          lambda: bboxes)
         return fix_image_flip_shape(image, result), bboxes
+

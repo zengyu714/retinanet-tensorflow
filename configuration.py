@@ -25,7 +25,7 @@ conf.nms_thred = 0.5
 # score threshold
 conf.cls_thred = 0.5
 # max detections
-conf.max_detection = 1000
+conf.max_output_size = 10
 
 # Training configuration
 # ==============================================================================================

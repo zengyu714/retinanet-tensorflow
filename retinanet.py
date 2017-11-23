@@ -76,8 +76,8 @@ class RetinaNet(tfe.Network):
 
 def test():
     with tf.device("gpu:0"):
-        image = tf.random_uniform([3, 1, 448, 448])
         model = RetinaNet()
+        image = tf.random_uniform([3, 1, 448, 448])
         loc_preds, cls_preds = model(image)
         print('loc_preds shape: {}'.format(loc_preds.shape))
         print('cls_preds shape: {}'.format(cls_preds.shape))
