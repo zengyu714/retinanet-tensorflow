@@ -66,7 +66,7 @@ def preprocess(image, bboxes, labels, mode, out_shape=(300, 300)):
       bboxes: (list) bounding boxes [xmin, ymin, xmax, ymax]
       labels: (int) corresponding label in [1, 2, ..., #num_classes]
       out_shape: The height and width of the image after preprocessing.
-      mode: `train` if we're preprocessing the image for training and `eval` for evaluation.
+      mode: `train` if we're preprocessing the image for training and `val` for evaluation.
 
     Returns:
       A preprocessed image.

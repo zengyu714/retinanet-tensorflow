@@ -10,18 +10,17 @@ import tensorflow.contrib.eager as tfe
 
 from loss import loss_fn
 from inputs import dataset_generator
-from encoder import BoxEncoder
 from retinanet import RetinaNet
 from configuration import conf
 
 parser = argparse.ArgumentParser(description='TensorFlow RetinaNet Training')
-parser.add_argument('--resume', '-r', default='store_true', help='resume from checkpoint')
+# parser.add_argument('--resume', '-r', default='store_true', help='resume from checkpoint')
 parser.add_argument('--cuda-device', default=0, type=int, help='gpu device index')
 
 args = parser.parse_args()
 
 
-def train_one_epoch(model, optimizer, dataset, log_interval=None):
+def train_one_epoch(model, optimizer, dataset, epoch):
     """Trains model on `dataset` using `optimizer`."""
 
     tf.train.get_or_create_global_step()
@@ -35,42 +34,43 @@ def train_one_epoch(model, optimizer, dataset, log_interval=None):
         tf.contrib.summary.scalar('total_loss', total_loss)
         return total_loss
 
+    total_time = 0.
     for batch, (images, loc_trues, cls_trues) in enumerate(tfe.Iterator(dataset)):
-        with tf.contrib.summary.record_summaries_every_n_global_steps(10):
+        with tf.contrib.summary.record_summaries_every_n_global_steps(conf.log_interval):
             gs = tf.train.get_global_step()
-            # Optimize the loss
-            batch_model_loss = functools.partial(model_loss, images, loc_trues, cls_trues)
-            optimizer.minimize(batch_model_loss, global_step=gs)
             # Visualize the input images
             tf.contrib.summary.image('inputs', tf.transpose(images, [0, 2, 3, 1]), max_images=2, global_step=gs)
-            if log_interval and batch % log_interval == 0:
-                print('[TRAINING] Batch #{}\ttotal loss: {:.6f}'.format(batch, batch_model_loss().numpy()))
+            # Optimize the loss
+            batch_model_loss = functools.partial(model_loss, images, loc_trues, cls_trues)
+            start = time.time()
+            optimizer.minimize(batch_model_loss, global_step=gs)
+            total_time += (time.time() - start)
+            if batch % conf.log_interval == 0:
+                time_in_ms = (total_time * 1000) / (batch + 1)
+                print("[TRAINING] Batch: {}({:.0f}/{}) \t".format(batch, epoch, conf.num_epochs),
+                      "total_loss: {:.6f} | avg_time: {:.2f}ms".format(batch_model_loss().numpy(), time_in_ms))
 
 
-def validate(model, dataset, visualize=True):
+def validate(model, dataset, epoch):
     """Perform an evaluation of `model` on the examples from `dataset`."""
 
-    total_loss = 0.
+    batch_loss, avg_loss = 0., 0.
+    start = time.time()
     for batch, (images, loc_trues, cls_trues) in enumerate(tfe.Iterator(dataset)):
         loc_preds, cls_preds = model(images)
-        if visualize:
-            with tf.device("cpu:0"):
-                box = BoxEncoder()
-                boxes, labels, scores = box.decode_batch(loc_preds.cpu(), cls_preds.cpu())
-                if boxes is not None:  # do detect something
-                    image = tf.image.draw_bounding_boxes(tf.transpose(images.cpu(), [0, 2, 3, 1]),
-                                                         tf.expand_dims(boxes, 1))
-                    tf.contrib.summary.image('validate', image, global_step=tf.train.get_global_step())
         loc_loss, cls_loss = loss_fn(loc_preds, loc_trues, cls_preds, cls_trues, num_classes=conf.num_class)
-        total_loss += loc_loss + cls_loss
+        batch_loss += loc_loss + cls_loss
+        avg_loss = batch_loss / (batch + 1)
         if batch % conf.log_interval == 0:
-            print('[EVALUATION] Batch #{}\tloc_loss: {:.6f} | cls_loss: {:.6f} | total_loss: {:.6f}'.format(
-                    batch, loc_loss.numpy(), cls_loss.numpy(), (loc_loss + cls_loss).numpy()))
+            fmt = [i.numpy() for i in [loc_loss, cls_loss, loc_loss + cls_loss, avg_loss]]
+            print("[EVALUATION] Batch: {}({:.0f}/{})\t".format(batch, epoch, conf.num_epochs),
+                  "loc_loss: {:.6f} | cls_loss: {:.6f} | total_loss: {:.6f} | avg_loss: {:.2f}".format(*fmt))
 
-    avg_loss = (total_loss / batch).numpy()
-    print('Test set: Average loss: {:.6f}\n'.format(avg_loss))
+    time_in_ms = (time.time() - start) / 60
+    print('[EVALUATION] Batch: {} Average time: {:.2f}min\n'.format(batch, time_in_ms))
     with tf.contrib.summary.always_record_summaries():
-        tf.contrib.summary.scalar('loss', avg_loss)
+        tf.contrib.summary.scalar('avg_loss', avg_loss)
+    return avg_loss
 
 
 def main(_):
@@ -83,7 +83,7 @@ def main(_):
                                           conf.input_size,
                                           num_epochs=1,
                                           batch_size=conf.batch_size,
-                                          buffer_size=100)  # TODO edit this when in real training
+                                          buffer_size=10000)  # TODO edit this when in real training
                         for mode in ['train', 'val']]
 
     # Create the model and optimizer
@@ -99,22 +99,26 @@ def main(_):
 
     checkpoint_prefix = os.path.join(conf.checkpoint_dir, 'ckpt')
 
-    with tf.device(device_name):
-        print('==> ==> ==> Start training from global step {}...\n'.format(
-                tf.train.get_or_create_global_step().numpy()))
-        for epoch in range(conf.num_epochs):
-            with tfe.restore_variables_on_create(tf.train.latest_checkpoint(conf.checkpoint_dir)):
+    with tfe.restore_variables_on_create(tf.train.latest_checkpoint(conf.checkpoint_dir)):
+        with tf.device(device_name):
+            epoch = tfe.Variable(1., name='epoch')
+            best_loss = tfe.Variable(tf.float32.max, name='best_loss')
+            print('==> ==> ==> Start training from epoch {:.0f}...\n'.format(epoch.numpy()))
+
+            while epoch <= conf.num_epochs + 1:
                 gs = tf.train.get_or_create_global_step()
-                start = time.time()
                 with train_summary_writer.as_default():
-                    train_one_epoch(model, optimizer, train_ds, conf.log_interval)
-                end = time.time()
-                print('==> ==> ==> Train time for epoch #{} (global step {}): {:.3f}s\n'.format(
-                        epoch, gs.numpy(), end - start))
+                    train_one_epoch(model, optimizer, train_ds, epoch.numpy())
                 with val_summary_writer.as_default():
-                    validate(model, val_ds)
-                all_variables = (model.variables + optimizer.variables() + [gs])
-                tfe.Saver(all_variables).save(checkpoint_prefix, global_step=gs)
+                    eval_loss = validate(model, val_ds, epoch.numpy())
+
+                # Save the best loss
+                if eval_loss < best_loss:
+                    best_loss.assign(eval_loss)  # do NOT be copied directly, SHALLOW!
+                    all_variables = (model.variables + optimizer.variables() + [gs] + [epoch] + [best_loss])
+                    tfe.Saver(all_variables).save(checkpoint_prefix, global_step=gs)
+
+                epoch.assign_add(1)
 
 
 if __name__ == '__main__':
