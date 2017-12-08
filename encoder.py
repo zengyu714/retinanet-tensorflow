@@ -146,18 +146,22 @@ class BoxEncoder:
         score = tf.reduce_max(tf.sigmoid(cls_preds), 1)
 
         ids = tf.cast(score > cls_thred, tf.int32)
-        ids = tf.squeeze(tf.where(tf.not_equal(ids, 0)))
-        if not ids.get_shape().as_list():  # Fail to detect, choose the max score
-            ids = tf.argmax(score)
-        if tf_box_order:  # [ymin, xmin, ymax, xmax]
+        ids = tf.where(tf.not_equal(ids, 0))
+
+        if not ids.numpy().any():  # Fail to detect, choose the max score
+            ids = tf.expand_dims(tf.argmax(score), axis=-1)
+        else:
+            ids = tf.squeeze(ids, -1)
+        if tf_box_order:
+            # [ymin, xmin, ymax, xmax]
             boxes = tf.transpose(tf.gather(tf.transpose(boxes), [1, 0, 3, 2]))
             keep = tf.image.non_max_suppression(tf.gather(boxes, ids),
                                                 tf.gather(score, ids),
                                                 max_output_size=max_output_size,
                                                 iou_threshold=nms_thred)
-        else:  # [xmin, ymin, xmax, ymax]
-            keep = box_nms(tf.gather(boxes, ids), tf.gather(score, ids),
-                           threshold=nms_thred)
+        else:
+            # [xmin, ymin, xmax, ymax]
+            keep = box_nms(tf.gather(boxes, ids), tf.gather(score, ids), threshold=nms_thred)
 
         def _index(t, index):
             """Gather tensor successively
